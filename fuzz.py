@@ -5,39 +5,39 @@ import random
 from pexpect import run
 from pipes import quote
 from qiling.extensions.coverage import utils as cov_utils
+import secrets
+import os
 
 def get_bytes(filename):
-	f = open('rootfs/'+filename, "rb").read()
+	f = open(filename, "rb").read()
 	return bytearray(f)
 
 def magic(data):
-    magic_vals = [(1, 255), (1, 255), (1, 127), (1, 0), (2, 255), (2, 0), (4, 255), (4, 0), (4, 128), (4, 64), (4, 127)]
+    magic_vals = [(1, [0x0]),
+            (1, [0x7f]),
+            (1, [0x80]),
+            (1, [0xff]),
+            (2, [0x0, 0x0]),
+            (2, [0x7f, 0xff]),
+            (2, [0x80, 0x00]),
+            (2, [0xff, 0xff]),
+            (4, [0x0, 0x0, 0x0, 0x0]),
+            (4, [0x7f, 0xff, 0xff, 0xff]),
+            (4, [0x80, 0x00, 0x00, 0x00]),
+            (4, [0xff, 0xff, 0xff, 0xff])]
     choice = random.choice(magic_vals)
     length = len(data) - 8
     index = range(0, length)
     picked_index = random.choice(index)
     for i in range(choice[0]):
-        if choice[0] == 4:
-            if choice[1] in [128, 64]:
-                if i > 0:
-                    data[picked_index+i] = 0
-                else:
-                    data[picked_index+i] = choice[1]
-            elif choice[1] == 127:
-                if i > 0:
-                    data[picked_index+i] = 255
-                else:
-                    data[picked_index+i] = choice[1]
-            else:
-                data[picked_index+i] = choice[1]
-        else:
-            data[picked_index+i] = choice[1]
+        data[picked_index+i] = choice[1][i]
     return data
+    
 
-def mutate_file(data):
-    f = open("rootfs/mutated.jpg", "wb+")
-    f.write(data)
-    f.close()
+def mutate_file(input_file, mutated_input):
+    mutated_file = os.path.join(corpus_path, os.path.basename(input_file))
+    with open(mutated_file, "wb") as f:
+        f.write(mutated_input)
 
 def flip_bit(byte_array, index):
     """Flips the bit at the given index in the byte array"""
@@ -46,24 +46,27 @@ def flip_bit(byte_array, index):
     byte_array[byte_index] ^= 1 << bit_index
     return byte_array
 
+def flipping(data):
+    num_of_flips = int((len(data) - 4) * .01)
+    indexes = range(4, (len(data) - 4))
+    chosen_indexes = []
+    counter = 0
+    while counter < num_of_flips:
+        chosen_indexes.append(random.choice(indexes))
+        counter += 1
+    for i in chosen_indexes:
+        data = flip_bit(data,i)
+    return data
+
 def mutator(data):
     option = [0,1]
     picked_mutation = random.choice(option)
     if picked_mutation == 0:
         #1
-        num_of_flips = int((len(data) - 4) * .01)
-        indexes = range(4, (len(data) - 4))
-        chosen_indexes = []
-        counter = 0
-        while counter < num_of_flips:
-            chosen_indexes.append(random.choice(indexes))
-            counter += 1
-        for i in chosen_indexes:
-            data = flip_bit(data,i)
+        data = flipping(data)
     elif picked_mutation == 1:
         #2
         data = magic(data)
-    mutate_file(data)
     
 
 def by_pass_isa_check(ql: Qiling) -> None:
@@ -75,28 +78,59 @@ def dump(ql, *args, **kw):
     ql.save(reg=False, cpu_context=True, snapshot="snapshot.bin")
     ql.emu_stop()
 
-def harness(filename):
-    data = get_bytes(filename)
+def callback(ql, address, size):
+    coverage.add(address)
+
+def update_coverage(input_file, mutated_input):
+    if len(coverage - all_coverage) > 0:
+        mutated_file = os.path.join(corpus_path, os.path.basename(input_file))
+        with open(mutated_file, "wb") as f:
+            f.write(mutated_input)
+        all_coverage.update(coverage)
+
+def harness(input_file):
+    data = get_bytes(input_file)
     mutator(data)
-    cmd = "./exif"
-    ql = Qiling([cmd,filename,"-verbose"], "./rootfs/", verbose=QL_VERBOSE.DEFAULT)
+    mutate_file(input_file, data)
+    ql = Qiling([cmd, input_file, "-verbose"], rootfs_path, verbose=QL_VERBOSE.OFF)
+    ql.hook_block(callback)
+    ql.add_fs_mapper(cmd, "exifsan")
+    ql.add_fs_mapper(snapshot_path, "snapshot.bin")
+    ql.add_fs_mapper( corpus_path, "corpus/")
     ql.add_fs_mapper('/proc', '/proc')
-    ql.restore(snapshot="snapshot.bin")
+    ql.restore(snapshot=snapshot_path)
     begin_point = X64BASE + 0xbe5
-    with cov_utils.collect_coverage(ql, 'drcov', 'rootfs/output.cov'):
-        ql.run(begin = begin_point)
+    ql.run(begin = begin_point)
+    coverage_info = {
+        "input_file": input_file,
+        "coverage": list(coverage)
+    }
+    print(len(coverage))
+    update_coverage(input_file, data)
+
+coverage = set()
+all_coverage =set()
+#paths:
+cmd = "rootfs/exifsan"
+rootfs_path = "rootfs/"
+snapshot_path = "snapshot.bin"
+corpus_path = rootfs_path + "corpus/"
+
 
 if len(sys.argv) < 2:
     print("Usage: fuzz.py <valid_jpg>")
 else:
-    cmd = "./exif"
     filename = sys.argv[1]
     counter = 0
+    ql = Qiling([cmd, filename, "-verbose"], rootfs_path, verbose=QL_VERBOSE.OFF)
+    ql.add_fs_mapper(cmd, "exif")
+    ql.add_fs_mapper(snapshot_path, "snapshot.bin")
+    ql.add_fs_mapper( corpus_path, "corpus/")
+    ql.add_fs_mapper('/proc', '/proc')
+    X64BASE = int(ql.profile.get("OS64", "load_address"), 16)
+    ql.hook_address(dump, X64BASE + 0xbe5)
+    ql.run()
     while counter<100:
-        ql = Qiling([cmd,filename,"-verbose"], "./rootfs/", verbose=QL_VERBOSE.DEFAULT)
-        ql.add_fs_mapper('/proc', '/proc')
-        X64BASE = int(ql.profile.get("OS64", "load_address"), 16)
-        ql.hook_address(dump, X64BASE + 0xbe5)
-        ql.run()
-        harness(filename)
+        harness(rootfs_path+filename)
         counter += 1
+    coverage.clear()
