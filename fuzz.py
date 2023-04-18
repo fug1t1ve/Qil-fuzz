@@ -2,8 +2,6 @@ from qiling.const import QL_VERBOSE
 from qiling import *
 import sys
 import random
-from pexpect import run
-from pipes import quote
 from qiling.extensions.coverage import utils as cov_utils
 import secrets
 import os
