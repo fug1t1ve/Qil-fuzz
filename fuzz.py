@@ -33,7 +33,7 @@ def magic(data):
     
 
 def mutate_file(input_file, mutated_input):
-    mutated_file = os.path.join(corpus_path, os.path.basename(input_file))
+    mutated_file = os.path.join('rootfs/tmp/', os.path.basename(input_file))
     with open(mutated_file, "wb") as f:
         f.write(mutated_input)
 
@@ -81,22 +81,26 @@ def callback(ql, address, size):
 
 def update_coverage(input_file, mutated_input):
     if len(coverage - all_coverage) > 0:
-        mutated_file = os.path.join(corpus_path, os.path.basename(input_file))
+        mutated_file = os.path.join(corpus_path, os.path.basename(input_file + secrets.token_hex(16)))
         with open(mutated_file, "wb") as f:
             f.write(mutated_input)
         all_coverage.update(coverage)
 
-def harness(input_file):
+def crash_handler(ql, address):
+    print("Program crashed at address 0x%x" % address)
+    ql.save("snapshots/crash-" + secrets.token_hex(16) + ".snapshot")
+    os._exit(1)
+
+def harness():
+    input_file = random.choice(corpus)
     data = get_bytes(input_file)
     mutator(data)
     mutate_file(input_file, data)
-    ql = Qiling([cmd, input_file, "-verbose"], rootfs_path, verbose=QL_VERBOSE.OFF)
+    ql = Qiling([cmd, "tmp/" + input_file, "-verbose"], rootfs_path, verbose=QL_VERBOSE.OFF)
     ql.hook_block(callback)
-    ql.add_fs_mapper(cmd, "exifsan")
-    ql.add_fs_mapper(snapshot_path, "snapshot.bin")
-    ql.add_fs_mapper( corpus_path, "corpus/")
     ql.add_fs_mapper('/proc', '/proc')
-    ql.restore(snapshot=snapshot_path)
+    X64BASE = int(ql.profile.get("OS64", "load_address"), 16)
+    ql.os.set_api("SIGSEGV", crash_handler)
     begin_point = X64BASE + 0xbe5
     ql.run(begin = begin_point)
     coverage_info = {
@@ -112,23 +116,15 @@ all_coverage =set()
 cmd = "rootfs/exifsan"
 rootfs_path = "rootfs/"
 snapshot_path = "snapshot.bin"
-corpus_path = rootfs_path + "corpus/"
+corpus_path = "rootfs/corpus/"
+corpus = glob.glob(os.path.join(corpus_path, "*"))
 
 
 if len(sys.argv) < 2:
     print("Usage: fuzz.py <valid_jpg>")
 else:
-    filename = sys.argv[1]
     counter = 0
-    ql = Qiling([cmd, filename, "-verbose"], rootfs_path, verbose=QL_VERBOSE.OFF)
-    ql.add_fs_mapper(cmd, "exif")
-    ql.add_fs_mapper(snapshot_path, "snapshot.bin")
-    ql.add_fs_mapper( corpus_path, "corpus/")
-    ql.add_fs_mapper('/proc', '/proc')
-    X64BASE = int(ql.profile.get("OS64", "load_address"), 16)
-    ql.hook_address(dump, X64BASE + 0xbe5)
-    ql.run()
     while counter<100:
-        harness(rootfs_path+filename)
+        harness()
         counter += 1
     coverage.clear()
