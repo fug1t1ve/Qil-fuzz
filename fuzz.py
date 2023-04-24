@@ -5,6 +5,7 @@ import random
 from qiling.extensions.coverage import utils as cov_utils
 import secrets
 import os
+import glob
 
 def get_bytes(filename):
 	f = open(filename, "rb").read()
@@ -81,7 +82,7 @@ def callback(ql, address, size):
 
 def update_coverage(input_file, mutated_input):
     if len(coverage - all_coverage) > 0:
-        mutated_file = os.path.join(corpus_path, os.path.basename(input_file + secrets.token_hex(16)))
+        mutated_file = os.path.join(corpus_path, os.path.basename(input_file[:-4] + secrets.token_hex(16) + input_file[-4:]))
         with open(mutated_file, "wb") as f:
             f.write(mutated_input)
         all_coverage.update(coverage)
@@ -89,7 +90,13 @@ def update_coverage(input_file, mutated_input):
 def crash_handler(ql, address):
     print("Program crashed at address 0x%x" % address)
     ql.save("snapshots/crash-" + secrets.token_hex(16) + ".snapshot")
-    os._exit(1)
+    ql.emu_stop()
+
+def exception_hook(ql, address):
+    exception_type, exception_value, traceback = ql.exc_info()
+    print("Exception: %s" % exception_type)
+    ql.save("rootfs/snapshots/crash-" + exception_type + "-" + secrets.token_hex(16) + ".snapshot")
+    ql.emu_stop()
 
 def harness():
     input_file = random.choice(corpus)
@@ -99,10 +106,9 @@ def harness():
     ql = Qiling([cmd, "tmp/" + input_file, "-verbose"], rootfs_path, verbose=QL_VERBOSE.OFF)
     ql.hook_block(callback)
     ql.add_fs_mapper('/proc', '/proc')
-    X64BASE = int(ql.profile.get("OS64", "load_address"), 16)
-    ql.os.set_api("SIGSEGV", crash_handler)
-    begin_point = X64BASE + 0xbe5
-    ql.run(begin = begin_point)
+    #ql.os.set_api("SIGSEGV", crash_handler)
+    ql.os.set_api(".*", "*", exception_hook)
+    ql.run()
     coverage_info = {
         "input_file": input_file,
         "coverage": list(coverage)
@@ -110,21 +116,23 @@ def harness():
     print(len(coverage))
     update_coverage(input_file, data)
 
+def clear_tmp():
+    dir_path = "rootfs/tmp/"
+    file_list = os.listdir(dir_path)
+    for file_name in file_list:
+        file_path = os.path.join(dir_path, file_name)
+        os.remove(file_path)
+
 coverage = set()
 all_coverage =set()
 #paths:
 cmd = "rootfs/exifsan"
 rootfs_path = "rootfs/"
-snapshot_path = "snapshot.bin"
 corpus_path = "rootfs/corpus/"
 corpus = glob.glob(os.path.join(corpus_path, "*"))
-
-
-if len(sys.argv) < 2:
-    print("Usage: fuzz.py <valid_jpg>")
-else:
-    counter = 0
-    while counter<100:
-        harness()
-        counter += 1
-    coverage.clear()
+counter = 0
+while counter<100:
+    harness()
+    counter += 1
+    clear_tmp()
+coverage.clear()
