@@ -1,5 +1,6 @@
 # Qil-fuzz
-A Simple coverage-guided snapshot fuzzer to fuzz exif data in images, written in Python. It utilizes the Qiling snapshot functionality.
+A Simple coverage-guided snapshot fuzzer, written in Python. It utilizes the Qiling snapshot functionality.
+The fuzzer can be adapted to test various targets instead of just fuzzing the EXIF data in images.
 
 It utilises 2 simple mutations:
 - Bit flip
