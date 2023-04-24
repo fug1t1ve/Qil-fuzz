@@ -97,6 +97,7 @@ def exception_hook(ql, address):
     print("Exception: %s" % exception_type)
     ql.save("rootfs/snapshots/crash-" + exception_type + "-" + secrets.token_hex(16) + ".snapshot")
     ql.emu_stop()
+    shutil.copy("rootfs/tmp/*", "crash/")
 
 def harness():
     input_file = random.choice(corpus)
